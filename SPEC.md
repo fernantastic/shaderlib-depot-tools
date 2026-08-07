@@ -109,6 +109,18 @@ key collision.
 Depots are independent: a missing one degrades to "those textures do not load",
 never to a hard failure, so a machine without the private depot still runs.
 
+### Bundling a depot
+
+A consumer can also ship a small depot inside itself, so it works with no
+configuration and no network. It is an ordinary depot — same folder shape, built
+by the same command — the only difference is that the consumer's bundler
+resolves each variant path to a URL instead of concatenating a base URL.
+
+Give the bundled depot **the same keys** as the full depots rather than
+private ones. Registered last, it then acts as a floor: loading a real depot
+transparently upgrades those keys to better variants, instead of leaving a
+differently-named fallback stranded in every saved preset.
+
 ## CORS
 
 Textures served cross-origin **must** send `Access-Control-Allow-Origin`, and
