@@ -136,7 +136,8 @@ for (const pack of packNames) {
     const key = `${pack}/${name.replace(/\.[^.]+$/, "")}.png`;
     const variants = {};
 
-    for (const spec of formatsFor({ kind: pol.kind, lossyOrigin })) {
+    const depth = pixFmt?.includes("16") ? 16 : 8;
+    for (const spec of formatsFor({ kind: pol.kind, lossyOrigin, depth })) {
       for (const width of pol.sizes) {
         if (width && w && width > w) continue; // never upscale
         const stem = key.replace(/\.png$/, "");
@@ -154,7 +155,7 @@ for (const pack of packNames) {
     manifest.assets[key] = {
       pack,
       w, h,
-      depth: pixFmt?.includes("16") ? 16 : 8,
+      depth,
       alpha: pixFmt ? /a|pal/.test(pixFmt) : false,
       colorSpace: pol.colorSpace,
       tiling: !!pol.tiling,
