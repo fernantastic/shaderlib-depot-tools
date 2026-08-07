@@ -36,6 +36,9 @@ const dry = process.argv.includes("--dry");
 const only = process.argv.includes("--only")
   ? process.argv[process.argv.indexOf("--only") + 1]
   : null;
+// Rewrite manifest.json without touching dist/. Keys and encoded paths are
+// independent, so re-addressing a depot does not mean re-encoding it.
+const manifestOnly = process.argv.includes("--manifest-only");
 
 const depot = JSON.parse(await fs.readFile(path.join(root, "depot.json"), "utf8"));
 const PACKS = path.join(root, "packs");
@@ -118,6 +121,7 @@ for (const pack of packNames) {
 
   const pol = policyFor(meta.tags);
   manifest.packs[pack] = {
+    keyspace: meta.keyspace ?? pack,
     title: meta.title ?? pack,
     author: meta.author ?? "",
     url: meta.url ?? "",
@@ -133,18 +137,33 @@ for (const pack of packNames) {
     const { w, h, pixFmt } = await probe(srcAbs);
     const lossyOrigin = isLossyOrigin(srcAbs, buf);
 
-    const key = `${pack}/${name.replace(/\.[^.]+$/, "")}.png`;
+    const stemName = name.replace(/\.[^.]+$/, "");
+    // A pack may declare a keyspace to publish into. Keys are what presets
+    // store, so they outlive folder names — renaming a pack to a provenance id
+    // must not orphan every preset that references it. Two packs may share a
+    // keyspace (two noise sets from different authors land in one category);
+    // filenames disambiguate.
+    const key = `${meta.keyspace ?? pack}/${stemName}.png`;
     const variants = {};
 
     const depth = pixFmt?.includes("16") ? 16 : 8;
+    // Never upscale — but if every configured size is larger than the source,
+    // fall back to its native size. Without this an asset smaller than the
+    // smallest size in its policy silently produced NO variants at all, and
+    // resolved to the placeholder at runtime. 128px sprites and 256px brushes
+    // both hit this.
+    const widths = pol.sizes.filter((x) => !x || !w || x <= w);
+    if (!widths.length) widths.push(null);
+
     for (const spec of formatsFor({ kind: pol.kind, lossyOrigin, depth })) {
-      for (const width of pol.sizes) {
-        if (width && w && width > w) continue; // never upscale
-        const stem = key.replace(/\.png$/, "");
-        const rel = `${spec.fmt}/${stem}${width ? `@${width}` : ""}.${spec.fmt}`;
+      for (const width of widths) {
+        // Storage path follows the PACK, not the key: that keeps dist/ stable
+        // when a keyspace changes, and keeps two packs sharing a keyspace from
+        // colliding on disk.
+        const rel = `${spec.fmt}/${pack}/${stemName}${width ? `@${width}` : ""}.${spec.fmt}`;
         // Variants are recorded either way: the manifest describes the depot,
         // not this run. Skipping the encode leaves already-built files in place.
-        if (encodeThis) {
+        if (encodeThis && !manifestOnly) {
           await encode(srcAbs, path.join(DIST, rel), spec, width);
           emitted++;
         }
