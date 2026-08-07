@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 /**
  * Turn a depot folder into a usable depot.
  *
