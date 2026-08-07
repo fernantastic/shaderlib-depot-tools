@@ -26,6 +26,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
+import fsSync from "node:fs";
 import path from "node:path";
 import { policyFor, formatsFor } from "./policy.mjs";
 
@@ -193,6 +194,29 @@ if (!dry) {
     path.join(root, "manifest.json"),
     JSON.stringify(manifest, null, 2) + "\n",
   );
+}
+
+// Verify the manifest against disk. A manifest that promises a variant which
+// was never encoded is the worst failure mode this tool has: nothing complains
+// at build time, and the consumer gets an image load error per frame, forever.
+// It happens whenever --manifest-only re-addresses assets whose encoded paths
+// then change, so the check has to run on every build, not just full ones.
+if (!dry) {
+  const missing = [];
+  for (const a of Object.values(manifest.assets))
+    for (const list of Object.values(a.variants))
+      for (const v of list)
+        if (!fsSync.existsSync(path.join(DIST, v.path))) missing.push(v.path);
+
+  if (missing.length) {
+    console.error(`
+INCOMPLETE: ${missing.length} variant(s) in the manifest are not on disk:`);
+    for (const p of missing.slice(0, 8)) console.error(`  ${p}`);
+    if (missing.length > 8) console.error(`  ... and ${missing.length - 8} more`);
+    const packs = [...new Set(missing.map((p) => p.split("/")[1]))];
+    console.error(`Re-encode them:  ${packs.map((p) => `--only ${p}`).join("  ")}`);
+    process.exitCode = 1;
+  }
 }
 
 const n = Object.keys(manifest.assets).length;
