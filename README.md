@@ -13,3 +13,4 @@ runtime.
 
 - [SPEC.md](SPEC.md) — the depot convention
 - [ENCODERS.md](ENCODERS.md) — measurements behind the format rules
+- [R2.md](R2.md) — publishing a depot to a bucket

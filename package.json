@@ -10,7 +10,12 @@
   "exports": {
     "./policy": "./src/policy.mjs"
   },
-  "files": ["src", "SPEC.md", "ENCODERS.md"],
+  "files": [
+    "src",
+    "SPEC.md",
+    "ENCODERS.md",
+    "R2.md"
+  ],
   "engines": {
     "node": ">=18"
   }
