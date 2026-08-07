@@ -1,0 +1,17 @@
+{
+  "name": "@fernantastic/depot-tools",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Build texture depots: a folder of lossless sources becomes a multi-format, self-describing asset depot.",
+  "license": "MIT",
+  "bin": {
+    "depot": "./src/build.mjs"
+  },
+  "exports": {
+    "./policy": "./src/policy.mjs"
+  },
+  "files": ["src", "SPEC.md", "ENCODERS.md"],
+  "engines": {
+    "node": ">=18"
+  }
+}
