@@ -6,9 +6,11 @@
  *   node sync-wrangler.mjs ../shaderlibrary-assets fernantastic-assets v1
  *
  * Use this when you authenticated with `wrangler login` and would rather not
- * mint an S3 API token. It is slower than sync.sh (rclone): wrangler uploads
- * one object per invocation, so a few hundred files means a few hundred process
- * launches. Correctness is identical; only throughput differs.
+ * mint an S3 API token. wrangler uploads one object per invocation, so cost is
+ * dominated by process launches, not bytes — which is why this resolves the
+ * wrangler entry point once and runs it with `node` directly. Going through
+ * `npx` each time measured 2474ms per call against 894ms direct: 2.8x, and on
+ * 775 files that is the difference between five minutes and under two.
  *
  * Uploads dist/ and manifest.json into one flat prefix — the layout the
  * manifest assumes: manifest.json at the root, variant paths relative to it.
@@ -18,6 +20,7 @@ import { promisify } from "node:util";
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import path from "node:path";
+import os from "node:os";
 
 const exec = promisify(execFile);
 
@@ -71,9 +74,26 @@ const CT = {
   ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".json": "application/json",
 };
 
+/** Resolve wrangler's entry point once; every upload reuses it. */
+function findWrangler() {
+  const roots = [
+    path.join(process.cwd(), "node_modules/wrangler/bin/wrangler.js"),
+    ...fsSync.existsSync(path.join(os.homedir(), "AppData/Local/npm-cache/_npx"))
+      ? fsSync.readdirSync(path.join(os.homedir(), "AppData/Local/npm-cache/_npx"))
+          .map((d) => path.join(os.homedir(), "AppData/Local/npm-cache/_npx", d, "node_modules/wrangler/bin/wrangler.js"))
+      : [],
+  ];
+  return roots.find((p) => fsSync.existsSync(p)) ?? null;
+}
+const WRANGLER = findWrangler();
+if (!WRANGLER) {
+  console.error("wrangler not found — run `npx wrangler login` once first.");
+  process.exit(1);
+}
+
 async function put(localAbs, remoteKey, cacheControl) {
-  await exec("npx", [
-    "--yes", "wrangler@latest", "r2", "object", "put", `${bucket}/${remoteKey}`,
+  await exec(process.execPath, [
+    WRANGLER, "r2", "object", "put", `${bucket}/${remoteKey}`,
     "--file", localAbs,
     "--content-type", CT[path.extname(localAbs).toLowerCase()] ?? "application/octet-stream",
     "--cache-control", cacheControl,
@@ -89,9 +109,9 @@ const IMMUTABLE = "public, max-age=31536000, immutable";
 console.log(`uploading ${files.length} files to ${bucket}${prefix ? "/" + prefix : ""}`);
 let done = 0, failed = [];
 const QUEUE = [...files];
-// Modest concurrency: each upload is its own npx process, so too many at once
-// costs more in process launches than it gains in parallelism.
-await Promise.all(Array.from({ length: 6 }, async () => {
+// Concurrency is tuned for process launches rather than bandwidth: each upload
+// is its own node process, and the work is almost entirely startup.
+await Promise.all(Array.from({ length: 12 }, async () => {
   for (let rel; (rel = QUEUE.shift()); ) {
     try { await put(path.join(DIST, rel), key(rel), IMMUTABLE); }
     catch (e) { failed.push(rel); console.error(`  FAILED ${rel}: ${String(e).slice(0, 120)}`); }
