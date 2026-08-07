@@ -101,7 +101,10 @@ let emitted = 0;
 const warnings = [];
 
 for (const pack of packNames) {
-  if (only && pack !== only) continue;
+  // `--only` narrows what gets ENCODED, never what gets catalogued. Skipping
+  // packs outright here would write a manifest describing just the one pack,
+  // silently deleting every other asset from the depot's index.
+  const encodeThis = !only || pack === only;
   const dir = path.join(PACKS, pack);
 
   let meta = {};
@@ -138,9 +141,13 @@ for (const pack of packNames) {
         if (width && w && width > w) continue; // never upscale
         const stem = key.replace(/\.png$/, "");
         const rel = `${spec.fmt}/${stem}${width ? `@${width}` : ""}.${spec.fmt}`;
-        await encode(srcAbs, path.join(DIST, rel), spec, width);
+        // Variants are recorded either way: the manifest describes the depot,
+        // not this run. Skipping the encode leaves already-built files in place.
+        if (encodeThis) {
+          await encode(srcAbs, path.join(DIST, rel), spec, width);
+          emitted++;
+        }
         (variants[spec.fmt] ??= []).push({ w: width ?? w, path: rel });
-        emitted++;
       }
     }
 

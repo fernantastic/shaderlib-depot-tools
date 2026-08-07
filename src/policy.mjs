@@ -111,14 +111,28 @@ export function policyFor(tags = []) {
  * the 16-bit noise masters need.
  */
 export function formatsFor({ kind, lossyOrigin }) {
-  if (kind === "data" || lossyOrigin) {
+  // Data must be lossless regardless of where it came from: a noise field or a
+  // dither matrix means something, and a second lossy pass corrupts the meaning
+  // rather than merely the look.
+  //
+  // For an already-lossy PHOTO the calculus inverts. Preserving it losslessly
+  // means spending bytes to store the first encoder's blocking faithfully —
+  // measured on a 598 KB source JPEG, lossless WebP came out at 1.58 MB, 2.6x
+  // LARGER for pixels nobody wants. So photos re-encode lossily, just at a
+  // higher quality floor to keep generation loss small.
+  //
+  // Alpha art stays lossless when its source is lossy: those are masks, cheap
+  // to store at the sizes involved, and lossy edges show up as halos.
+  if (kind === "data" || (lossyOrigin && kind !== "photo")) {
     return [
       { fmt: "webp", lossless: true },
       { fmt: "png", lossless: true },
     ];
   }
+
+  const bump = lossyOrigin ? 10 : 0; // less headroom when re-encoding a re-encode
   return [
-    { fmt: "avif", lossless: false, quality: kind === "alpha" ? 78 : 68 },
-    { fmt: "webp", lossless: false, quality: kind === "alpha" ? 88 : 82 },
+    { fmt: "avif", lossless: false, quality: (kind === "alpha" ? 78 : 68) + bump },
+    { fmt: "webp", lossless: false, quality: (kind === "alpha" ? 88 : 82) + bump },
   ];
 }
