@@ -9,21 +9,20 @@
  * actually asks for, and shipping 400 textures to render three is a cost paid
  * on every deploy and every page load.
  *
- * Which keys count as used is decided by a plain text scan: any manifest key
- * appearing verbatim in a scanned file. Keys live in shader comments, saved
- * presets and source, all of which are text, and the key format is distinctive
- * enough that a false positive is harmless (it keeps a file) while a false
- * negative is not (it drops one). So the scan is deliberately literal.
+ * Which keys count as used, and how the manifest is rewritten to match, live
+ * in scan.mjs — `depot-fetch --scan` applies the identical rule before it
+ * downloads anything, and a build that fetched one set while pruning to
+ * another would ship textures nothing references, or drop ones it needs.
  *
- * The manifest is rewritten to match. That is the important part: `allKeys`
- * drives the texture dropdown and the randomiser, so a manifest still listing
- * pruned assets would offer the user textures that are no longer there.
+ * Prefer `depot-fetch --scan` for a build: it never downloads the files this
+ * would delete. Reach for prune when the depot is already on disk.
  *
  * Run it against a COPY, or re-fetch afterwards — this deletes files.
  */
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import path from "node:path";
+import { usedKeys, restrictManifest, keptPaths } from "./scan.mjs";
 
 const [depotArg, ...scanDirs] = process.argv.slice(2);
 const dry = process.argv.includes("--dry");
@@ -37,29 +36,9 @@ const root = path.resolve(depotArg);
 const manifestPath = path.join(root, "manifest.json");
 const manifest = JSON.parse(await fs.readFile(manifestPath, "utf8"));
 
-const TEXT = /\.(ts|tsx|js|jsx|json|frag|vert|glsl|md|html|css)$/i;
-function* files(dir) {
-  for (const e of fsSync.readdirSync(dir, { withFileTypes: true })) {
-    if (e.name === "node_modules" || e.name === ".git" || e.name === "dist") continue;
-    const abs = path.join(dir, e.name);
-    if (e.isDirectory()) yield* files(abs);
-    else if (TEXT.test(e.name)) yield abs;
-  }
-}
-
-let haystack = "";
-let scanned = 0;
-for (const dir of dirs) {
-  if (!fsSync.existsSync(dir)) { console.warn(`  skipping missing ${dir}`); continue; }
-  for (const f of files(dir)) { haystack += await fs.readFile(f, "utf8"); scanned++; }
-}
-
 const allKeys = Object.keys(manifest.assets);
-const used = new Set(allKeys.filter((k) => haystack.includes(k)));
-
-// Keys may also be stored without the .png the convention appends, so accept
-// the bare stem too rather than dropping a texture that is genuinely referenced.
-for (const k of allKeys) if (!used.has(k) && haystack.includes(k.replace(/\.png$/, ""))) used.add(k);
+const { used, scanned, missing } = await usedKeys(allKeys, dirs);
+for (const d of missing) console.warn(`  skipping missing ${d}`);
 
 console.log(`scanned ${scanned} files in ${dirs.join(", ")}`);
 console.log(`  ${used.size} of ${allKeys.length} keys referenced`);
@@ -70,10 +49,7 @@ if (!used.size) {
   process.exit(1);
 }
 
-const keep = new Set();
-for (const k of used)
-  for (const list of Object.values(manifest.assets[k].variants))
-    for (const v of list) keep.add(v.path);
+const keep = keptPaths(manifest, used);
 
 // Everything on disk that no surviving asset points at.
 function* onDisk(dir, base = dir) {
@@ -107,10 +83,7 @@ pruneEmpty(root);
 
 // Rewrite the manifest to match. Without this the dropdown and the randomiser
 // would still offer keys whose files are gone.
-for (const k of allKeys) if (!used.has(k)) delete manifest.assets[k];
-const packsInUse = new Set(Object.values(manifest.assets).map((a) => a.pack));
-for (const p of Object.keys(manifest.packs)) if (!packsInUse.has(p)) delete manifest.packs[p];
-manifest.pruned = true;
+restrictManifest(manifest, used);
 
 await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
 console.log(`\ndone — ${Object.keys(manifest.assets).length} assets, ${Object.keys(manifest.packs).length} packs`);

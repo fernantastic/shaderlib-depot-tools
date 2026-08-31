@@ -22,17 +22,39 @@
  * treating a 429 as a dead file. Without that a cold fetch of a large depot
  * fails somewhere in the middle, which is exactly when it matters.
  *
- *   --jobs N   parallel downloads (default 8)
- *   --force    re-download even files already present at the right size
+ *   --jobs N     parallel downloads (default 8)
+ *   --force      re-download even files already present at the right size
+ *   --scan DIR   fetch only the assets DIR's source actually references
+ *                (repeatable). The manifest is cut down to match, so this is
+ *                fetch and prune in one pass — a build wants the handful of
+ *                textures it ships, not the whole published depot, and
+ *                downloading 108 MB to keep 1 MB is a cost paid on every
+ *                deploy. Without it you get everything, which is what a dev
+ *                machine wants: the dropdown browses the full set.
  */
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import path from "node:path";
+import { usedKeys, restrictManifest, keptPaths } from "./scan.mjs";
 
 const args = process.argv.slice(2);
-const [remote, dest] = args.filter((a) => !a.startsWith("--"));
+
+// --scan and --jobs each consume the value after them, so those values must not
+// be mistaken for the two positional arguments.
+const consumed = new Set();
+const scanDirs = [];
+for (let i = 0; i < args.length; i++) {
+  if (args[i] === "--scan" || args[i] === "--jobs") {
+    consumed.add(i);
+    consumed.add(i + 1);
+    if (args[i] === "--scan" && args[i + 1]) scanDirs.push(args[i + 1]);
+  }
+}
+const [remote, dest] = args.filter((a, i) => !a.startsWith("--") && !consumed.has(i));
 if (!remote || !dest) {
-  console.error("usage: fetch.mjs <remote-url> <dest-folder> [--jobs N] [--force]");
+  console.error(
+    "usage: fetch.mjs <remote-url> <dest-folder> [--scan DIR]... [--jobs N] [--force]",
+  );
   process.exit(1);
 }
 const base = remote.replace(/\/+$/, "");
@@ -78,6 +100,27 @@ if (!res.ok) {
   process.exit(1);
 }
 const manifest = await res.json();
+const published = Object.keys(manifest.assets).length;
+
+// With --scan the manifest is cut to the referenced keys before anything is
+// downloaded, so the queue below is built from what survives. Same rule prune
+// uses, from the same module, so "what a build fetches" and "what a build
+// keeps" cannot drift apart.
+if (scanDirs.length) {
+  const { used, scanned, missing } = await usedKeys(Object.keys(manifest.assets), scanDirs);
+  for (const d of missing) console.warn(`  skipping missing scan dir ${d}`);
+
+  // The same refusal prune makes, for the same reason: no matches almost
+  // certainly means a wrong scan path, and acting on it would fetch nothing
+  // and write a manifest claiming the depot is empty.
+  if (!used.size) {
+    console.error("REFUSING: no keys matched — that is almost certainly a wrong --scan path.");
+    process.exit(1);
+  }
+  restrictManifest(manifest, used);
+  console.log(`  scanned ${scanned} files in ${scanDirs.join(", ")}`);
+  console.log(`  ${used.size} of ${published} keys referenced`);
+}
 
 // Every variant the manifest lists, deduplicated: two assets can legitimately
 // point at the same file, and downloading it twice is pure waste.
@@ -128,6 +171,36 @@ await Promise.all(
 if (failed.length) {
   console.error(`\n${failed.length} download(s) failed; manifest not written.`);
   process.exit(1);
+}
+
+// A scanned fetch has to sweep, not just skip. The destination may already
+// hold a full depot from an earlier unscanned run — public/ is exactly such a
+// folder — and Vite copies all of public/ into dist/, so files left behind
+// would ship even though the manifest no longer lists them. Downloading less
+// is only half of shipping less.
+if (scanDirs.length) {
+  const keep = keptPaths(manifest, new Set(Object.keys(manifest.assets)));
+  let swept = 0, freed = 0;
+  function* onDisk(dir) {
+    for (const e of fsSync.readdirSync(dir, { withFileTypes: true })) {
+      const abs = path.join(dir, e.name);
+      if (e.isDirectory()) yield* onDisk(abs);
+      else yield path.relative(out, abs).replaceAll("\\", "/");
+    }
+  }
+  for (const rel of [...onDisk(out)]) {
+    if (rel === "manifest.json" || keep.has(rel)) continue;
+    freed += fsSync.statSync(path.join(out, rel)).size;
+    await fs.rm(path.join(out, rel), { force: true });
+    swept++;
+  }
+  // Prune empty directories, so the tree does not fill with husks.
+  (function pruneEmpty(dir) {
+    for (const e of fsSync.readdirSync(dir, { withFileTypes: true }))
+      if (e.isDirectory()) pruneEmpty(path.join(dir, e.name));
+    if (dir !== out && !fsSync.readdirSync(dir).length) fsSync.rmdirSync(dir);
+  })(out);
+  if (swept) console.log(`swept ${swept} unreferenced file(s) (${(freed / 1048576).toFixed(0)} MB)`);
 }
 
 // baseUrl is cleared deliberately. It records where the depot was published,
