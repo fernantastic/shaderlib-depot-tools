@@ -10,7 +10,9 @@
     "depot-prune": "./src/prune.mjs"
   },
   "exports": {
-    "./policy": "./src/policy.mjs"
+    "./policy": "./src/policy.mjs",
+    "./fetch": "./src/fetch.mjs",
+    "./prune": "./src/prune.mjs"
   },
   "files": [
     "src",
