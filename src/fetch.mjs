@@ -16,22 +16,63 @@
  *
  * Re-running is cheap: files already present with the right size are skipped,
  * so this doubles as "update to whatever the bucket has now".
+ *
+ * A public r2.dev URL is rate limited, and a depot is hundreds of files, so
+ * every request goes through `req` below: it backs off and retries rather than
+ * treating a 429 as a dead file. Without that a cold fetch of a large depot
+ * fails somewhere in the middle, which is exactly when it matters.
+ *
+ *   --jobs N   parallel downloads (default 8)
+ *   --force    re-download even files already present at the right size
  */
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import path from "node:path";
 
-const [remote, dest] = process.argv.slice(2);
+const args = process.argv.slice(2);
+const [remote, dest] = args.filter((a) => !a.startsWith("--"));
 if (!remote || !dest) {
-  console.error("usage: fetch.mjs <remote-url> <dest-folder>");
+  console.error("usage: fetch.mjs <remote-url> <dest-folder> [--jobs N] [--force]");
   process.exit(1);
 }
 const base = remote.replace(/\/+$/, "");
 const out = path.resolve(dest);
-const force = process.argv.includes("--force");
+const force = args.includes("--force");
+const jobsFlag = args.indexOf("--jobs");
+const JOBS = jobsFlag === -1 ? 8 : Math.max(1, Number(args[jobsFlag + 1]) || 8);
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * fetch, but patient. 429 is not "this file is missing", it is "ask again
+ * later", and the bucket says how much later often enough to be worth
+ * honouring. Everything transient — rate limits, 5xx, a dropped socket — comes
+ * back here; a 404 does not, because no amount of waiting will fix it.
+ *
+ * The jitter matters more than the backoff: without it the whole worker pool
+ * retries in lockstep and reproduces the burst that caused the 429.
+ */
+async function req(url, opts = {}, attempts = 6) {
+  for (let i = 0; ; i++) {
+    let res, err;
+    try {
+      res = await fetch(url, opts);
+      if (res.status !== 429 && res.status < 500) return res;
+    } catch (e) {
+      err = e;
+    }
+    if (i >= attempts - 1) {
+      if (err) throw err;
+      throw new Error(`HTTP ${res.status} after ${attempts} attempts`);
+    }
+    const retryAfter = Number(res?.headers.get("retry-after"));
+    const backoff = retryAfter > 0 ? retryAfter * 1000 : 500 * 2 ** i;
+    await sleep(Math.min(backoff, 30_000) * (0.5 + Math.random()));
+  }
+}
 
 console.log(`fetching ${base}`);
-const res = await fetch(`${base}/manifest.json`);
+const res = await req(`${base}/manifest.json`);
 if (!res.ok) {
   console.error(`could not read ${base}/manifest.json — HTTP ${res.status}`);
   process.exit(1);
@@ -62,18 +103,18 @@ async function get(rel) {
   // Size is enough to tell "already have it" from "never downloaded": published
   // paths are immutable, so a file that exists at the right length is the file.
   if (!force && fsSync.existsSync(abs)) {
-    const head = await fetch(`${base}/${rel}`, { method: "HEAD" });
+    const head = await req(`${base}/${rel}`, { method: "HEAD" });
     const len = Number(head.headers.get("content-length") ?? -1);
     if (len >= 0 && fsSync.statSync(abs).size === len) { skipped++; return; }
   }
-  const r = await fetch(`${base}/${rel}`);
+  const r = await req(`${base}/${rel}`);
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   await fs.mkdir(path.dirname(abs), { recursive: true });
   await fs.writeFile(abs, Buffer.from(await r.arrayBuffer()));
 }
 
 await Promise.all(
-  Array.from({ length: 16 }, async () => {
+  Array.from({ length: JOBS }, async () => {
     for (let rel; (rel = QUEUE.shift()); ) {
       try { await get(rel); }
       catch (e) { failed.push(rel); console.error(`  FAILED ${rel}: ${e.message}`); }
