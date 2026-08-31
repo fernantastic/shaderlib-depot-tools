@@ -6,7 +6,8 @@
   "license": "MIT",
   "bin": {
     "depot": "./src/build.mjs",
-    "depot-fetch": "./src/fetch.mjs"
+    "depot-fetch": "./src/fetch.mjs",
+    "depot-prune": "./src/prune.mjs"
   },
   "exports": {
     "./policy": "./src/policy.mjs"
